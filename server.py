@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -40,6 +41,16 @@ SESSIONS = HOME / "sessions"
 AGY_PATH = os.environ.get("AGY_PATH", str(Path.home() / "AppData/Local/agy/bin/agy.exe"))
 AGY_TIMEOUT = int(os.environ.get("FREE_WORKER_AGY_TIMEOUT", "1200"))
 HTTP_TIMEOUT = 300
+COPILOT_PATH = os.environ.get("COPILOT_PATH", str(Path.home() / "AppData/Local/GitHubCopilotCLI/copilot.exe"))
+COPILOT_TIMEOUT = int(os.environ.get("FREE_WORKER_COPILOT_TIMEOUT", "600"))
+COPILOT_CWD = HOME / "copilot-empty"  # stays empty, so no repo config or instructions load
+# --available-tools="" is silently ignored and leaves every tool on, including shell and
+# apply_patch. An allowlist holding only a name that doesn't exist leaves the model with none.
+COPILOT_LOCKDOWN = [
+    "--available-tools=fw_no_such_tool", "--deny-tool=shell", "--deny-tool=write",
+    "--deny-tool=url", "--disable-builtin-mcps", "--no-custom-instructions",
+    "--no-ask-user", "--no-auto-update", "--disallow-temp-dir", "-s",
+]
 
 READ_ONLY = (
     "READ-ONLY MODE: Do not create, modify, or delete any files, do not run "
@@ -227,6 +238,37 @@ def _agy(model: str) -> Callable[..., str]:
     return call
 
 
+def _copilot(system: str, messages: list[dict], web: bool, cwd: str | None) -> str:
+    """GitHub Copilot CLI with no tools: it only sees text inlined here, so the secrets
+    blocklist in _read_file still applies. The prompt goes over stdin (no command-line limit)."""
+    if web:
+        raise Skip("Copilot runs without tools, so it has no web search")
+    transcript = "\n\n".join(f"[{m['role'].upper()}]\n{m['content']}" for m in messages)
+    prompt = (f"{system}\nYou have no tools. Everything you may use is in this message; "
+              f"if something is missing, say so.\n\n{transcript}")
+    COPILOT_CWD.mkdir(parents=True, exist_ok=True)
+    env = {k: v for k, v in os.environ.items() if k != "COPILOT_ALLOW_ALL"}
+    sid = str(uuid.uuid4())
+    try:
+        r = subprocess.run([COPILOT_PATH, *COPILOT_LOCKDOWN, f"--session-id={sid}"], input=prompt,
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=COPILOT_TIMEOUT, cwd=COPILOT_CWD, env=env)
+    except FileNotFoundError:
+        raise Skip(f"Copilot CLI not found at {COPILOT_PATH}")
+    except subprocess.TimeoutExpired:
+        raise Skip(f"Copilot timed out after {COPILOT_TIMEOUT}s")
+    finally:
+        # Copilot keeps every prompt on disk with no expiry, and prompts can hold file text.
+        shutil.rmtree(Path.home() / ".copilot/session-state" / sid, ignore_errors=True)
+    out = (r.stdout or "").strip()
+    if r.returncode == 0 and out:
+        return out  # don't scan a good answer: it may discuss quotas or rate limits
+    detail = ((r.stderr or "") + "\n" + out).strip()
+    if re.search(r"quota|rate.?limit|\b429\b|credits?|limit (reached|exceeded)", detail, re.I):
+        raise QuotaHit(_parse_reset(detail) or 6 * 3600, "quota: " + detail.splitlines()[-1][:200])
+    raise Skip(f"Copilot exit {r.returncode}: {detail[-300:]}")
+
+
 def _http_error(resp: httpx.Response) -> None:
     if resp.status_code < 400:
         return
@@ -292,6 +334,7 @@ PROVIDERS: dict[str, Provider] = {p.name: p for p in [
     Provider("agy-flash", "agy · Gemini 3.8 Flash (High)", _agy("Gemini 3.8 Flash (High)"), 10**9, web=True, reads_paths=True),
     Provider("agy-sonnet", "agy · Claude Sonnet 4.6", _agy("Claude Sonnet 4.6 (Thinking)"), 10**9, web=True, reads_paths=True),
     Provider("agy-gptoss", "agy · GPT-OSS 120B", _agy("GPT-OSS 120B (Medium)"), 10**9, web=True, reads_paths=True),
+    Provider("copilot", "GitHub Copilot CLI (Auto)", _copilot, 60_000),
     Provider("gemini", "Gemini API (free key)", _gemini, 900_000, web=True, needs_key="gemini"),
     Provider("mistral", "Mistral API", _openai_compat("https://api.mistral.ai/v1", "mistral"), 100_000, needs_key="mistral"),
     Provider("groq", "Groq API", _openai_compat("https://api.groq.com/openai/v1", "groq", [{"type": "browser_search"}]),
@@ -300,10 +343,10 @@ PROVIDERS: dict[str, Provider] = {p.name: p for p in [
 ]}
 
 CHAINS = {
-    "delegate": ["agy-flash", "agy-sonnet", "gemini", "mistral", "groq", "agy-gptoss", "openrouter"],
-    "analyze": ["agy-flash", "agy-sonnet", "gemini", "mistral", "agy-gptoss", "groq", "openrouter"],
+    "delegate": ["agy-flash", "agy-sonnet", "copilot", "gemini", "mistral", "groq", "agy-gptoss", "openrouter"],
+    "analyze": ["agy-flash", "agy-sonnet", "copilot", "gemini", "mistral", "agy-gptoss", "groq", "openrouter"],
     "web": ["agy-flash", "agy-sonnet", "gemini", "groq", "agy-gptoss"],
-    "review": ["agy-sonnet", "agy-flash", "gemini", "mistral", "groq", "agy-gptoss", "openrouter"],
+    "review": ["agy-sonnet", "agy-flash", "copilot", "gemini", "mistral", "groq", "agy-gptoss", "openrouter"],
 }
 
 
@@ -401,7 +444,7 @@ def delegate(prompt: str, files: list[str] | None = None, cwd: str | None = None
 
     files: absolute paths whose text is given to the model (secrets and ~/.claude are refused).
     prefer: provider names to try first, e.g. ["gemini"]. Providers: agy-flash, agy-sonnet,
-    agy-gptoss, gemini, mistral, groq, openrouter. The answer ends with the provider used and a
+    agy-gptoss, copilot, gemini, mistral, groq, openrouter. The answer ends with the provider used and a
     session id for follow_up.
     """
     body = f"{prompt}\n\n{RETURN_FORMAT}"
