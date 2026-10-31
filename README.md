@@ -8,6 +8,7 @@ A read-only MCP worker for Claude Code. Claude hands it drafting, file reading, 
 | --- | --- | --- | --- |
 | `agy-flash` | Antigravity CLI · Gemini 3.8 Flash (High) | agy installed and logged in | yes |
 | `agy-sonnet` | Antigravity CLI · Claude Sonnet 4.6 (Thinking) | same | yes |
+| `copilot` | GitHub Copilot CLI (Auto model) | `copilot` installed and logged in | no |
 | `gemini` | Gemini API free key | `setup gemini` | Google Search grounding |
 | `mistral` | Mistral API free credits | `setup mistral` | no |
 | `groq` | Groq free API (gpt-oss-120b) | `setup groq` | browser search |
@@ -36,6 +37,7 @@ Reviews (`review`) try Sonnet first. Web lookups only use providers with real se
 - API keys live in `~/.free-worker/config.json`, entered through a hidden prompt, and are scrubbed from any error text.
 - Sessions (which can contain file text) are deleted after 7 days.
 - agy gets file paths rather than file text, and tasks longer than ~24,000 characters skip agy (Windows command-line limit).
+- Copilot runs with no tools, in an empty folder, with its built-in MCP servers off. It can't read, write or run anything, so it only sees the text free-worker passes it, after the blocklist above. Copilot CLI has no read-only switch and ignores `--available-tools=""`, which is why the allowlist holds a tool name that doesn't exist. Copilot's own saved copy of each session is deleted right after the call. Prompts go to GitHub, so files passed to this provider leave the machine, as they do with the other API providers.
 
 ## Add a free key (optional, any time)
 
