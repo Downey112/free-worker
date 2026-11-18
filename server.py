@@ -287,11 +287,13 @@ def _http_error(resp: httpx.Response) -> None:
     raise Skip(f"HTTP {resp.status_code}: {text[:200]}")
 
 
-def _openai_compat(base: str, key_name: str, web_tools: list | None = None) -> Callable[..., str]:
+def _openai_compat(base: str, key_name: str, web_tools: list | None = None,
+                   model: str | None = None) -> Callable[..., str]:
+    """model pins a fixed model; otherwise the one chosen in setup is used."""
     def call(system: str, messages: list[dict], web: bool, cwd: str | None) -> str:
         cfg = _load(CONFIG_FILE, {}).get(key_name, {})
         body: dict[str, Any] = {
-            "model": cfg["model"],
+            "model": model or cfg["model"],
             "messages": [{"role": "system", "content": system}] + messages,
             "temperature": 0.3,
         }
@@ -344,16 +346,19 @@ PROVIDERS: dict[str, Provider] = {p.name: p for p in [
     Provider("groq", "Groq API", _openai_compat("https://api.groq.com/openai/v1", "groq", [{"type": "browser_search"}]),
              6_000, web=True, needs_key="groq"),
     Provider("openrouter", "OpenRouter :free", _openai_compat("https://openrouter.ai/api/v1", "openrouter"), 30_000, needs_key="openrouter"),
-    # ILMU (YTL AI Labs, the API behind ILMUcode). Pay-as-you-go credit, not free, so it sits last.
-    Provider("ilmu", "ILMU API (ILMUcode GLM 5.3, paid credit)", _openai_compat("https://api.ilmu.ai/v1", "ilmu"),
-             200_000, needs_key="ilmu"),
+    # ILMU (YTL AI Labs, the API behind ILMUcode). Pay-as-you-go credit, not free, so both sit last:
+    # the ~10x cheaper Flash first, then full GLM 5.3. Both use the one key from `setup ilmu`.
+    Provider("ilmu-flash", "ILMU API · ilmu-glm-5.3-flash (paid credit)",
+             _openai_compat("https://api.ilmu.ai/v1", "ilmu", model="ilmu-glm-5.3-flash"), 200_000, needs_key="ilmu"),
+    Provider("ilmu", "ILMU API · ilmu-glm-5.3 (paid credit)",
+             _openai_compat("https://api.ilmu.ai/v1", "ilmu", model="ilmu-glm-5.3"), 200_000, needs_key="ilmu"),
 ]}
 
 CHAINS = {
-    "delegate": ["agy-flash", "agy-sonnet", "copilot", "gemini", "mistral", "groq", "agy-gptoss", "openrouter", "ilmu"],
-    "analyze": ["agy-flash", "agy-sonnet", "copilot", "gemini", "mistral", "agy-gptoss", "groq", "openrouter", "ilmu"],
+    "delegate": ["agy-flash", "agy-sonnet", "copilot", "gemini", "mistral", "groq", "agy-gptoss", "openrouter", "ilmu-flash", "ilmu"],
+    "analyze": ["agy-flash", "agy-sonnet", "copilot", "gemini", "mistral", "agy-gptoss", "groq", "openrouter", "ilmu-flash", "ilmu"],
     "web": ["agy-flash", "agy-sonnet", "gemini", "groq", "agy-gptoss"],
-    "review": ["agy-sonnet", "agy-flash", "copilot", "gemini", "mistral", "groq", "agy-gptoss", "openrouter", "ilmu"],
+    "review": ["agy-sonnet", "agy-flash", "copilot", "gemini", "mistral", "groq", "agy-gptoss", "openrouter", "ilmu-flash", "ilmu"],
 }
 
 
@@ -451,7 +456,7 @@ def delegate(prompt: str, files: list[str] | None = None, cwd: str | None = None
 
     files: absolute paths whose text is given to the model (secrets and ~/.claude are refused).
     prefer: provider names to try first, e.g. ["gemini"]. Providers: agy-flash, agy-sonnet,
-    agy-gptoss, copilot, gemini, mistral, groq, openrouter, ilmu (paid ILMU credit, tried last). The answer ends with the provider used and a
+    agy-gptoss, copilot, gemini, mistral, groq, openrouter, ilmu-flash, ilmu (paid ILMU credit, tried last). The answer ends with the provider used and a
     session id for follow_up.
     """
     body = f"{prompt}\n\n{RETURN_FORMAT}"
