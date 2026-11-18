@@ -1,11 +1,12 @@
 # free-worker
 
-A read-only MCP worker for Claude Code. Claude hands it drafting, file reading, web lookups and reviews; it sends each task to the first **free** model that still has quota, and moves to the next when one runs out.
+A read-only MCP worker for Claude Code. Claude hands it drafting, file reading, web lookups and reviews; it sends each task to the first model that still has quota, and moves to the next when one runs out. The first choice is ILMU's GLM 5.3 (paid credit); after that it uses **free** models.
 
 ## Providers, in fallback order
 
 | Name | What | Needs | Web search |
 | --- | --- | --- | --- |
+| `ilmu` | ILMU API (YTL AI Labs, the model behind ILMUcode) · `ilmu-glm-5.3`. **Paid** pay-as-you-go credit; first choice for drafting, file reading and reviews | `setup ilmu` | no |
 | `agy-flash` | Antigravity CLI · Gemini 3.8 Flash (High) | agy installed and logged in | yes |
 | `agy-sonnet` | Antigravity CLI · Claude Sonnet 4.6 (Thinking) | same | yes |
 | `copilot` | GitHub Copilot CLI (Auto model) | `copilot` installed and logged in | no |
@@ -14,12 +15,11 @@ A read-only MCP worker for Claude Code. Claude hands it drafting, file reading, 
 | `groq` | Groq free API (gpt-oss-120b) | `setup groq` | browser search |
 | `agy-gptoss` | Antigravity CLI · GPT-OSS 120B | agy | yes |
 | `openrouter` | OpenRouter `:free` models (50/day) | `setup openrouter` | no |
-| `ilmu-flash` | ILMU API (YTL AI Labs, the model behind ILMUcode) · `ilmu-glm-5.3-flash`. **Paid** pay-as-you-go credit, so it is tried near last | `setup ilmu` | no |
-| `ilmu` | ILMU API · full `ilmu-glm-5.3` (~10x the Flash price), tried last | same key | no |
+| `ilmu-flash` | ILMU API · `ilmu-glm-5.3-flash` (~10x cheaper than GLM 5.3), last-resort backup | same key | no |
 
 Providers without a key are skipped. When a provider returns a quota error (agy's "Resets in …", HTTP 429, or HTTP 402 / ILMU `billing.*` for no credit left), it cools down for that long and the next one is used. Each answer ends with the provider used, a session id, and which providers it fell back past.
 
-Reviews (`review`) try Sonnet first. Web lookups only use providers with real search.
+Reviews (`review`) try ILMU GLM 5.3, then Sonnet. Web lookups only use providers with real search, so they start with agy.
 
 ## Tools
 
@@ -55,7 +55,7 @@ uv run --script C:/Users/courts/free-worker/server.py setup ilmu   # one key ena
 
 The script checks the key against the provider's model list and picks a model automatically (or uses the model you name after the provider).
 
-ILMU is not free: it spends the pay-as-you-go balance in the ILMU Console (shared with the ILMUcode desktop app). Per 1M tokens: `ilmu-glm-5.3` RM5.15 in / RM16.05 out, `ilmu-glm-5.3-flash` RM0.55 in / RM1.85 out (docs.ilmu.ai, checked 18 Nov 2026). Flash goes first and full GLM 5.3 last, so ILMU only runs when the free providers are out, or when you pass `prefer=["ilmu-flash"]` / `prefer=["ilmu"]`. The ILMUcode desktop app signs in through the browser and has no key; make an API key in the console instead.
+ILMU is not free: it spends the pay-as-you-go balance in the ILMU Console (shared with the ILMUcode desktop app). Per 1M tokens: `ilmu-glm-5.3` RM5.15 in / RM16.05 out, `ilmu-glm-5.3-flash` RM0.55 in / RM1.85 out (docs.ilmu.ai, checked 18 Nov 2026). GLM 5.3 is tried first on every drafting, file-reading and review task, so it uses credit on each call; Flash is the last backup. When the balance runs out (HTTP 402) both cool down for a day and the free providers take over. ILMU answers are streamed, because ILMU cuts off non-streaming requests after about 110 seconds. The ILMUcode desktop app signs in through the browser and has no key; make an API key in the console instead.
 
 Get keys at: console.groq.com/keys · aistudio.google.com/apikey · console.mistral.ai/api-keys · openrouter.ai/settings/keys · console.ilmu.ai/dashboard/keys
 

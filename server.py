@@ -288,8 +288,9 @@ def _http_error(resp: httpx.Response) -> None:
 
 
 def _openai_compat(base: str, key_name: str, web_tools: list | None = None,
-                   model: str | None = None) -> Callable[..., str]:
-    """model pins a fixed model; otherwise the one chosen in setup is used."""
+                   model: str | None = None, stream: bool = False) -> Callable[..., str]:
+    """model pins a fixed model; otherwise the one chosen in setup is used. stream=True reads
+    the answer as server-sent events, for APIs that cut off long non-streaming requests."""
     def call(system: str, messages: list[dict], web: bool, cwd: str | None) -> str:
         cfg = _load(CONFIG_FILE, {}).get(key_name, {})
         body: dict[str, Any] = {
@@ -299,13 +300,37 @@ def _openai_compat(base: str, key_name: str, web_tools: list | None = None,
         }
         if web and web_tools:
             body["tools"] = web_tools
+        headers = {"Authorization": f"Bearer {cfg['key']}"}
         try:
-            resp = httpx.post(f"{base}/chat/completions", json=body, timeout=HTTP_TIMEOUT,
-                              headers={"Authorization": f"Bearer {cfg['key']}"})
+            if not stream:
+                resp = httpx.post(f"{base}/chat/completions", json=body, timeout=HTTP_TIMEOUT, headers=headers)
+                _http_error(resp)
+                return resp.json()["choices"][0]["message"]["content"] or ""
+            body["stream"] = True
+            parts: list[str] = []
+            # Generous read timeout per chunk; a thinking model can pause before its first token.
+            with httpx.stream("POST", f"{base}/chat/completions", json=body, headers=headers,
+                              timeout=httpx.Timeout(HTTP_TIMEOUT, connect=30)) as resp:
+                if resp.status_code >= 400:
+                    resp.read()
+                    _http_error(resp)
+                for line in resp.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    chunk = json.loads(data)
+                    if chunk.get("error"):
+                        raise Skip(f"stream error: {str(chunk['error'])[:200]}")
+                    for ch in chunk.get("choices") or []:
+                        parts.append((ch.get("delta") or {}).get("content") or "")
+            out = "".join(parts)
+            if not out.strip():
+                raise Skip("empty streamed answer")
+            return out
         except httpx.HTTPError as e:
             raise Skip(f"network: {type(e).__name__}")
-        _http_error(resp)
-        return resp.json()["choices"][0]["message"]["content"] or ""
     return call
 
 
@@ -346,19 +371,20 @@ PROVIDERS: dict[str, Provider] = {p.name: p for p in [
     Provider("groq", "Groq API", _openai_compat("https://api.groq.com/openai/v1", "groq", [{"type": "browser_search"}]),
              6_000, web=True, needs_key="groq"),
     Provider("openrouter", "OpenRouter :free", _openai_compat("https://openrouter.ai/api/v1", "openrouter"), 30_000, needs_key="openrouter"),
-    # ILMU (YTL AI Labs, the API behind ILMUcode). Pay-as-you-go credit, not free, so both sit last:
-    # the ~10x cheaper Flash first, then full GLM 5.3. Both use the one key from `setup ilmu`.
-    Provider("ilmu-flash", "ILMU API · ilmu-glm-5.3-flash (paid credit)",
-             _openai_compat("https://api.ilmu.ai/v1", "ilmu", model="ilmu-glm-5.3-flash"), 200_000, needs_key="ilmu"),
+    # ILMU (YTL AI Labs, the API behind ILMUcode), paid pay-as-you-go credit, one key from `setup ilmu`.
+    # The user chose full GLM 5.3 as the first choice; the cheaper Flash is the last-resort backup.
+    # Streamed, because ILMU cuts off non-streaming requests after ~110 s.
     Provider("ilmu", "ILMU API · ilmu-glm-5.3 (paid credit)",
-             _openai_compat("https://api.ilmu.ai/v1", "ilmu", model="ilmu-glm-5.3"), 200_000, needs_key="ilmu"),
+             _openai_compat("https://api.ilmu.ai/v1", "ilmu", model="ilmu-glm-5.3", stream=True), 200_000, needs_key="ilmu"),
+    Provider("ilmu-flash", "ILMU API · ilmu-glm-5.3-flash (paid credit)",
+             _openai_compat("https://api.ilmu.ai/v1", "ilmu", model="ilmu-glm-5.3-flash", stream=True), 200_000, needs_key="ilmu"),
 ]}
 
 CHAINS = {
-    "delegate": ["agy-flash", "agy-sonnet", "copilot", "gemini", "mistral", "groq", "agy-gptoss", "openrouter", "ilmu-flash", "ilmu"],
-    "analyze": ["agy-flash", "agy-sonnet", "copilot", "gemini", "mistral", "agy-gptoss", "groq", "openrouter", "ilmu-flash", "ilmu"],
-    "web": ["agy-flash", "agy-sonnet", "gemini", "groq", "agy-gptoss"],
-    "review": ["agy-sonnet", "agy-flash", "copilot", "gemini", "mistral", "groq", "agy-gptoss", "openrouter", "ilmu-flash", "ilmu"],
+    "delegate": ["ilmu", "agy-flash", "agy-sonnet", "copilot", "gemini", "mistral", "groq", "agy-gptoss", "openrouter", "ilmu-flash"],
+    "analyze": ["ilmu", "agy-flash", "agy-sonnet", "copilot", "gemini", "mistral", "agy-gptoss", "groq", "openrouter", "ilmu-flash"],
+    "web": ["agy-flash", "agy-sonnet", "gemini", "groq", "agy-gptoss"],  # ILMU web search isn't wired up
+    "review": ["ilmu", "agy-sonnet", "agy-flash", "copilot", "gemini", "mistral", "groq", "agy-gptoss", "openrouter", "ilmu-flash"],
 }
 
 
@@ -455,8 +481,9 @@ def delegate(prompt: str, files: list[str] | None = None, cwd: str | None = None
     """Hand a drafting/analysis task to the first free model with quota left.
 
     files: absolute paths whose text is given to the model (secrets and ~/.claude are refused).
-    prefer: provider names to try first, e.g. ["gemini"]. Providers: agy-flash, agy-sonnet,
-    agy-gptoss, copilot, gemini, mistral, groq, openrouter, ilmu-flash, ilmu (paid ILMU credit, tried last). The answer ends with the provider used and a
+    prefer: provider names to try first, e.g. ["gemini"]. Default order starts with ilmu (ILMU
+    GLM 5.3, paid credit), then agy-flash, agy-sonnet, copilot, gemini, mistral, groq, agy-gptoss,
+    openrouter, and ilmu-flash last. The answer ends with the provider used and a
     session id for follow_up.
     """
     body = f"{prompt}\n\n{RETURN_FORMAT}"
