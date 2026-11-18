@@ -6,7 +6,7 @@
 free model provider and falls back to the next one when a quota runs out.
 
 Run as an MCP server:   uv run --script server.py
-Add a provider key:     uv run --script server.py setup <groq|gemini|mistral|openrouter>
+Add a provider key:     uv run --script server.py setup <groq|gemini|mistral|openrouter|ilmu> [model]
 Show providers/quotas:  uv run --script server.py status
 """
 from __future__ import annotations
@@ -273,6 +273,10 @@ def _http_error(resp: httpx.Response) -> None:
     if resp.status_code < 400:
         return
     text = resp.text[:400]
+    ilmu_code = resp.headers.get("x-ilmu-error-code", "")
+    if resp.status_code == 402 or ilmu_code.startswith("billing."):
+        # Out of paid credit / plan allocation: it won't refill on its own, so park it for a day.
+        raise QuotaHit(24 * 3600, f"{resp.status_code} out of credit ({ilmu_code or 'payment required'}): {text[:160]}")
     if resp.status_code == 429:
         retry = resp.headers.get("retry-after")
         secs = float(retry) if retry and retry.replace(".", "").isdigit() else None
@@ -340,13 +344,16 @@ PROVIDERS: dict[str, Provider] = {p.name: p for p in [
     Provider("groq", "Groq API", _openai_compat("https://api.groq.com/openai/v1", "groq", [{"type": "browser_search"}]),
              6_000, web=True, needs_key="groq"),
     Provider("openrouter", "OpenRouter :free", _openai_compat("https://openrouter.ai/api/v1", "openrouter"), 30_000, needs_key="openrouter"),
+    # ILMU (YTL AI Labs, the API behind ILMUcode). Pay-as-you-go credit, not free, so it sits last.
+    Provider("ilmu", "ILMU API (ILMUcode GLM 5.3, paid credit)", _openai_compat("https://api.ilmu.ai/v1", "ilmu"),
+             200_000, needs_key="ilmu"),
 ]}
 
 CHAINS = {
-    "delegate": ["agy-flash", "agy-sonnet", "copilot", "gemini", "mistral", "groq", "agy-gptoss", "openrouter"],
-    "analyze": ["agy-flash", "agy-sonnet", "copilot", "gemini", "mistral", "agy-gptoss", "groq", "openrouter"],
+    "delegate": ["agy-flash", "agy-sonnet", "copilot", "gemini", "mistral", "groq", "agy-gptoss", "openrouter", "ilmu"],
+    "analyze": ["agy-flash", "agy-sonnet", "copilot", "gemini", "mistral", "agy-gptoss", "groq", "openrouter", "ilmu"],
     "web": ["agy-flash", "agy-sonnet", "gemini", "groq", "agy-gptoss"],
-    "review": ["agy-sonnet", "agy-flash", "copilot", "gemini", "mistral", "groq", "agy-gptoss", "openrouter"],
+    "review": ["agy-sonnet", "agy-flash", "copilot", "gemini", "mistral", "groq", "agy-gptoss", "openrouter", "ilmu"],
 }
 
 
@@ -444,7 +451,7 @@ def delegate(prompt: str, files: list[str] | None = None, cwd: str | None = None
 
     files: absolute paths whose text is given to the model (secrets and ~/.claude are refused).
     prefer: provider names to try first, e.g. ["gemini"]. Providers: agy-flash, agy-sonnet,
-    agy-gptoss, copilot, gemini, mistral, groq, openrouter. The answer ends with the provider used and a
+    agy-gptoss, copilot, gemini, mistral, groq, openrouter, ilmu (paid ILMU credit, tried last). The answer ends with the provider used and a
     session id for follow_up.
     """
     body = f"{prompt}\n\n{RETURN_FORMAT}"
@@ -539,14 +546,16 @@ KEY_SETUP = {
     "openrouter": ("https://openrouter.ai/api/v1/models", "Bearer", [], "https://openrouter.ai/settings/keys"),
     "gemini": ("https://generativelanguage.googleapis.com/v1beta/models", "goog",
                ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"], "https://aistudio.google.com/apikey"),
+    "ilmu": ("https://api.ilmu.ai/v1/models", "Bearer", ["ilmu-glm-5.3", "ilmu-glm-5.3-flash"],
+             "https://console.ilmu.ai/dashboard/keys (pay-as-you-go credit, not free)"),
 }
 
 
-def _setup(name: str) -> None:
+def _setup(name: str, model_arg: str | None = None) -> None:
     if name not in KEY_SETUP:
         sys.exit(f"Unknown provider {name!r}. Choose one of: {', '.join(KEY_SETUP)}")
     url, auth, preferred, where = KEY_SETUP[name]
-    print(f"Get a free {name} API key at {where}")
+    print(f"Get a {name} API key at {where}")
     key = getpass.getpass(f"{name} API key (hidden): ").strip()
     if not key:
         sys.exit("No key entered.")
@@ -559,6 +568,8 @@ def _setup(name: str) -> None:
     if name == "openrouter":
         free = sorted(i for i in ids if i.endswith(":free"))
         preferred = [i for i in free if "gpt-oss-120b" in i] + [i for i in free if "deepseek" in i] + free
+    if model_arg:
+        preferred = [model_arg]
     model = next((m for m in preferred if m in ids), None)
     if not model:
         sys.exit(f"None of the expected models were found. Available: {', '.join(ids[:30])}")
@@ -573,7 +584,7 @@ if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "serve"
     sys.stdout.reconfigure(encoding="utf-8")
     if cmd == "setup":
-        _setup(sys.argv[2] if len(sys.argv) > 2 else "")
+        _setup(sys.argv[2] if len(sys.argv) > 2 else "", sys.argv[3] if len(sys.argv) > 3 else None)
     elif cmd == "status":
         print(json.dumps(status(), indent=2, ensure_ascii=False))
     else:
