@@ -202,6 +202,7 @@ class Provider:
     web: bool = False
     reads_paths: bool = False  # agy reads files itself; APIs get the text inlined
     needs_key: str | None = None
+    model: str | None = None  # pinned model, shown by status instead of the setup choice
     extra: dict = field(default_factory=dict)
 
 
@@ -375,9 +376,11 @@ PROVIDERS: dict[str, Provider] = {p.name: p for p in [
     # The user chose full GLM 5.3 as the first choice; the cheaper Flash is the last-resort backup.
     # Streamed, because ILMU cuts off non-streaming requests after ~110 s.
     Provider("ilmu", "ILMU API · ilmu-glm-5.3 (paid credit)",
-             _openai_compat("https://api.ilmu.ai/v1", "ilmu", model="ilmu-glm-5.3", stream=True), 200_000, needs_key="ilmu"),
+             _openai_compat("https://api.ilmu.ai/v1", "ilmu", model="ilmu-glm-5.3", stream=True), 200_000, needs_key="ilmu",
+             model="ilmu-glm-5.3"),
     Provider("ilmu-flash", "ILMU API · ilmu-glm-5.3-flash (paid credit)",
-             _openai_compat("https://api.ilmu.ai/v1", "ilmu", model="ilmu-glm-5.3-flash", stream=True), 200_000, needs_key="ilmu"),
+             _openai_compat("https://api.ilmu.ai/v1", "ilmu", model="ilmu-glm-5.3-flash", stream=True), 200_000, needs_key="ilmu",
+             model="ilmu-glm-5.3-flash"),
 ]}
 
 CHAINS = {
@@ -560,7 +563,7 @@ def status() -> dict[str, Any]:
         rows[name] = {
             "provider": p.label,
             "set_up": ready,
-            "model": cfg.get(p.needs_key, {}).get("model") if p.needs_key else None,
+            "model": p.model or (cfg.get(p.needs_key, {}).get("model") if p.needs_key else None),
             "state": (f"cooling down until {datetime.fromtimestamp(cd['until']).strftime('%d %b %H:%M')} ({cd['reason'][:80]})"
                       if cd else ("ready" if ready else "no key — run: server.py setup " + (p.needs_key or ""))),
             "calls_today": st.get("usage", {}).get(_today(), {}).get(name, 0),
