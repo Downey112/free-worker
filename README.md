@@ -6,20 +6,20 @@ A read-only MCP worker for Claude Code. Claude hands it drafting, file reading, 
 
 | Name | What | Needs | Web search |
 | --- | --- | --- | --- |
-| `ilmu` | ILMU API (YTL AI Labs, the model behind ILMUcode) · `ilmu-glm-5.3`. **Paid** pay-as-you-go credit; first choice for drafting, file reading and reviews | `setup ilmu` | no |
+| `ilmu` | ILMU API (YTL AI Labs, the model behind ILMUcode) · `ilmu-glm-5.3`. **Paid** pay-as-you-go credit; first choice for drafting, file reading, reviews and web lookups | `setup ilmu` | yes (server-side search, RM0.04/search) |
 | `agy-flash` | Antigravity CLI · Gemini 3.8 Flash (High) | agy installed and logged in | yes |
 | `agy-sonnet` | Antigravity CLI · Claude Sonnet 4.6 (Thinking) | same | yes |
-| `copilot` | GitHub Copilot CLI (Auto model) | `copilot` installed and logged in | no |
+| `copilot` | GitHub Copilot CLI (Auto model) | `copilot` installed and logged in | yes (web_fetch, web lookups only) |
 | `gemini` | Gemini API free key | `setup gemini` | Google Search grounding |
 | `mistral` | Mistral API free credits | `setup mistral` | no |
 | `groq` | Groq free API (gpt-oss-120b) | `setup groq` | browser search |
 | `agy-gptoss` | Antigravity CLI · GPT-OSS 120B | agy | yes |
 | `openrouter` | OpenRouter `:free` models (50/day) | `setup openrouter` | no |
-| `ilmu-flash` | ILMU API · `ilmu-glm-5.3-flash` (~10x cheaper than GLM 5.3), last-resort backup | same key | no |
+| `ilmu-flash` | ILMU API · `ilmu-glm-5.3-flash` (~10x cheaper than GLM 5.3), last-resort backup | same key | yes (server-side search, RM0.04/search) |
 
 Providers without a key are skipped. When a provider returns a quota error (agy's "Resets in …", HTTP 429, or HTTP 402 / ILMU `billing.*` for no credit left), it cools down for that long and the next one is used. Each answer ends with the provider used, a session id, and which providers it fell back past.
 
-Reviews (`review`) try ILMU GLM 5.3, then Sonnet. Web lookups only use providers with real search, so they start with agy.
+Reviews (`review`) try ILMU GLM 5.3, then Sonnet. Web lookups go ILMU GLM 5.3 (server-side web search, RM0.04 per search plus result tokens, paid) → Copilot (web_fetch only) → Gemini → Groq → ILMU Flash, with the agy providers last.
 
 ## Tools
 
@@ -39,7 +39,7 @@ Reviews (`review`) try ILMU GLM 5.3, then Sonnet. Web lookups only use providers
 - API keys live in `~/.free-worker/config.json`, entered through a hidden prompt, and are scrubbed from any error text.
 - Sessions (which can contain file text) are deleted after 7 days.
 - agy gets file paths rather than file text, and tasks longer than ~24,000 characters skip agy (Windows command-line limit).
-- Copilot runs with no tools, in an empty folder, with its built-in MCP servers off. It can't read, write or run anything, so it only sees the text free-worker passes it, after the blocklist above. Copilot CLI has no read-only switch and ignores `--available-tools=""`, which is why the allowlist holds a tool name that doesn't exist. Copilot's own saved copy of each session is deleted right after the call. Prompts go to GitHub, so files passed to this provider leave the machine, as they do with the other API providers.
+- Copilot runs in an empty folder with its built-in MCP servers off. Drafting, analysis and review tasks give it no tools at all, so it only sees the text free-worker passes it, after the blocklist above. Only web lookups give it a tool: `web_fetch` and nothing else (no shell, write or other file tools), with any URL allowed, and those calls send only the query text, never files. Copilot CLI has no read-only switch and ignores `--available-tools=""`, which is why the no-tool allowlist holds a tool name that doesn't exist. Copilot's own saved copy of each session is deleted right after the call. Prompts go to GitHub, so files passed to this provider leave the machine, as they do with the other API providers.
 
 ## Add a free key (optional, any time)
 
