@@ -35,7 +35,7 @@ Reviews (`review`) try ILMU GLM 5.3, then Sonnet. Web lookups go ILMU GLM 5.3 (s
 ## Safety
 
 - Every prompt starts with the READ-ONLY line, and the server itself never writes outside `~/.free-worker`.
-- It refuses to read `~/.claude` (except `CLAUDE.md`), `.env*`, keys, `.ssh`, `.aws`, gcloud config, credential stores, browser profiles, `~/.threads-mcp`, and its own key file.
+- It refuses to read `~/.claude` (except `CLAUDE.md`, the SOUL role files `agents/*.md`, and the briefed skills `skills/full-stack-ai-agent-stack/SKILL.md` and `skills/build-ui/` `SKILL.md` + `references/*.md`), `.env*`, keys, `.ssh`, `.aws`, gcloud config, credential stores, browser profiles, `~/.threads-mcp`, and its own key file.
 - API keys live in `~/.free-worker/config.json`, entered through a hidden prompt, and are scrubbed from any error text.
 - Sessions (which can contain file text) are deleted after 7 days.
 - agy gets file paths rather than file text, and tasks longer than ~24,000 characters skip agy (Windows command-line limit).
