@@ -93,12 +93,29 @@ AGY_MAX_PROMPT_CHARS = 24_000  # Windows caps a command line at ~32k chars
 SESSION_TTL = 7 * 24 * 3600  # sessions hold file text, so don't keep them forever
 
 
+# The only files under ~/.claude the worker may read (CLAUDE.md section 6/8):
+# the rules, the SOUL role files and the skills briefed to the worker.
+_CLAUDE_ALLOW = [
+    "claude.md",
+    "agents/*.md",
+    "skills/full-stack-ai-agent-stack/skill.md",
+    "skills/build-ui/skill.md",
+    "skills/build-ui/references/*.md",
+]
+
+
 def _blocked(path: Path) -> str | None:
     p = str(path.resolve()).replace("\\", "/")
     low = p.lower()
     claude = str(Path.home() / ".claude").replace("\\", "/").lower()
-    if low.startswith(claude + "/") and low != claude + "/claude.md":
-        return "inside ~/.claude (memory, history and sessions are off limits)"
+    if low.startswith(claude + "/"):
+        rel = low[len(claude) + 1:]
+        # fnmatch's * also matches "/", so reject nested paths for single-level globs.
+        allowed = any(
+            fnmatch.fnmatch(rel, g) and rel.count("/") == g.count("/") for g in _CLAUDE_ALLOW
+        )
+        if not allowed:
+            return "inside ~/.claude (memory, history and sessions are off limits)"
     for g in _BLOCK_GLOBS:
         if fnmatch.fnmatch(low, g.lower()):
             return f"matches the secrets blocklist ({g})"
