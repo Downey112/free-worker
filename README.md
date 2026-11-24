@@ -26,6 +26,7 @@ Reviews (`review`) try ILMU GLM 5.3, then Sonnet. Web lookups go ILMU GLM 5.3 (s
 - `delegate(prompt, files?, cwd?, prefer?)`: drafting and analysis.
 - `analyze_files(files, question, prefer?)`: read text, code, CSV, Markdown and PDF files and answer with file + line/page citations.
 - `web_lookup(query, prefer?)`: current facts with source URLs.
+- `browse(urls, question, prefer?)`: open 1–5 pages in headless Chromium (JavaScript rendered, e.g. GitHub repo pages or docs sites), read their visible text, and answer with the page URL cited for every claim. One-time setup: `uv run --with playwright==1.63.0 playwright install chromium`.
 - `review(content? | files?, focus?, prefer?)`: an adversarial second opinion.
 - `follow_up(session_id, question, prefer?)`: revision rounds; any provider can continue a session.
 - `status()`: which providers are set up, cooling down, and used today.
@@ -38,6 +39,7 @@ Reviews (`review`) try ILMU GLM 5.3, then Sonnet. Web lookups go ILMU GLM 5.3 (s
 - It refuses to read `~/.claude` (except `CLAUDE.md`, the SOUL role files `agents/*.md`, and the briefed skills `skills/full-stack-ai-agent-stack/SKILL.md` and `skills/build-ui/` `SKILL.md` + `references/*.md`), `.env*`, keys, `.ssh`, `.aws`, gcloud config, credential stores, browser profiles, `~/.threads-mcp`, and its own key file.
 - API keys live in `~/.free-worker/config.json`, entered through a hidden prompt, and are scrubbed from any error text.
 - Sessions (which can contain file text) are deleted after 7 days.
+- `browse` only reads: it loads pages and never clicks, types or fills forms. Each page gets a fresh browser context in a separate child process (killed with its Chromium if it hangs), never your real Chrome profile or its logins. Only public http/https hosts are allowed; every request a page makes is checked, redirects are followed one hop at a time with each hop checked, so nothing reaches localhost or your LAN (tested with a page that tried an image, fetch, WebSocket, meta refresh and a 302 into `127.0.0.1`). Service workers are blocked, WebSockets are mocked and never connect, downloads are off, and page text is passed to the model as untrusted data.
 - agy gets file paths rather than file text, and tasks longer than ~24,000 characters skip agy (Windows command-line limit).
 - Copilot runs in an empty folder with its built-in MCP servers off. Drafting, analysis and review tasks give it no tools at all, so it only sees the text free-worker passes it, after the blocklist above. Only web lookups give it a tool: `web_fetch` and nothing else (no shell, write or other file tools), with any URL allowed, and those calls send only the query text, never files. Copilot CLI has no read-only switch and ignores `--available-tools=""`, which is why the no-tool allowlist holds a tool name that doesn't exist. Copilot's own saved copy of each session is deleted right after the call. Prompts go to GitHub, so files passed to this provider leave the machine, as they do with the other API providers.
 
